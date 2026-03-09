@@ -48,12 +48,13 @@ class _ScannerPageState extends State<ScannerPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-         leading: IconButton(
-          icon: Icon(Icons.chevron_left,
-              size: 28, color: Theme.of(context).primaryColor),
-          onPressed: () => context.pop(),
-        ),
-        title: const Text('Scan Barcode',style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18))),
+          leading: IconButton(
+            icon: Icon(Icons.chevron_left,
+                size: 28, color: Theme.of(context).primaryColor),
+            onPressed: () => context.pop(),
+          ),
+          title: const Text('Scan Barcode',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18))),
       body: Stack(
         children: [
           MobileScanner(
