@@ -1,4 +1,6 @@
+import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../features/billing/presentation/pages/home_page.dart';
 import '../../features/product/presentation/pages/product_list_page.dart';
 import '../../features/product/presentation/pages/add_product_page.dart';
@@ -8,10 +10,63 @@ import '../../features/settings/presentation/pages/settings_page.dart';
 import '../../features/billing/presentation/pages/scanner_page.dart';
 import '../../features/billing/presentation/pages/checkout_page.dart';
 import '../../features/product/domain/entities/product.dart';
+import '../../features/auth/presentation/pages/login_page.dart';
+import '../../features/auth/presentation/pages/signup_page.dart';
+import '../../features/billing/presentation/pages/transactions_page.dart';
+import '../../features/splash/presentation/pages/splash_page.dart';
+import '../../features/customer/presentation/pages/customer_list_page.dart';
+import '../../features/customer/presentation/pages/add_customer_page.dart';
+import '../../features/customer/presentation/pages/customer_purchase_page.dart';
+import '../../features/customer/presentation/pages/customer_detail_page.dart';
+import '../../features/customer/domain/entities/customer_entity.dart';
+import '../../features/customer/presentation/bloc/customer_bloc.dart';
+import '../../features/customer/presentation/bloc/customer_event.dart';
+import '../../core/service_locator.dart' as di;
+import '../../features/auth/presentation/bloc/auth_bloc.dart';
+import 'go_router_refresh_stream.dart';
 
 final router = GoRouter(
-  initialLocation: '/',
+  initialLocation: '/splash',
+  redirect: (context, state) {
+    final isSplash = state.matchedLocation == '/splash';
+    final authState = di.sl<AuthBloc>().state;
+    final isLoggingIn = state.matchedLocation == '/login';
+    final isSigningUp = state.matchedLocation == '/signup';
+
+    // Don't redirect the splash screen.
+    if (isSplash) return null;
+
+    // While Firebase is still resolving the session or an action is in flight,
+    // don't redirect — let the UI show its own loader.
+    if (authState.status == AuthStatus.initial ||
+        authState.status == AuthStatus.loading) {
+      return null;
+    }
+
+    if (authState.status == AuthStatus.unauthenticated ||
+        authState.status == AuthStatus.error) {
+      if (!isLoggingIn && !isSigningUp) return '/login';
+    } else if (authState.status == AuthStatus.authenticated) {
+      if (isLoggingIn || isSigningUp) {
+        return '/';
+      }
+    }
+
+    return null;
+  },
+  refreshListenable: GoRouterRefreshStream(di.sl<AuthBloc>().stream),
   routes: [
+    GoRoute(
+      path: '/splash',
+      builder: (context, state) => const SplashPage(),
+    ),    GoRoute(
+      path: '/login',
+      builder: (context, state) => const LoginPage(),
+    ),
+    GoRoute(
+      path: '/signup',
+      builder: (context, state) => const SignUpPage(),
+    ),
     GoRoute(
       path: '/',
       builder: (context, state) => const HomePage(),
@@ -23,6 +78,10 @@ final router = GoRouter(
         GoRoute(
           path: 'checkout',
           builder: (context, state) => const CheckoutPage(),
+        ),
+        GoRoute(
+          path: 'transactions',
+          builder: (context, state) => const TransactionsPage(),
         ),
       ],
     ),
@@ -54,6 +113,41 @@ final router = GoRouter(
     GoRoute(
       path: '/shop',
       builder: (context, state) => const ShopDetailsPage(),
+    ),
+    GoRoute(
+      path: '/customers',
+      builder: (context, state) => BlocProvider(
+        create: (_) => di.sl<CustomerBloc>()..add(LoadCustomersEvent()),
+        child: const CustomerListPage(),
+      ),
+      routes: [
+        GoRoute(
+          path: 'add',
+          builder: (context, state) => BlocProvider.value(
+            value: state.extra as CustomerBloc? ??
+                (di.sl<CustomerBloc>()..add(LoadCustomersEvent())),
+            child: const AddCustomerPage(),
+          ),
+        ),
+        GoRoute(
+          path: ':id',
+          builder: (context, state) {
+            final customer = state.extra as CustomerEntity?;
+            if (customer == null) return const SizedBox.shrink();
+            return CustomerDetailPage(customer: customer);
+          },
+          routes: [
+            GoRoute(
+              path: 'purchase',
+              builder: (context, state) {
+                final customer = state.extra as CustomerEntity?;
+                if (customer == null) return const SizedBox.shrink();
+                return CustomerPurchasePage(customer: customer);
+              },
+            ),
+          ],
+        ),
+      ],
     ),
   ],
 );

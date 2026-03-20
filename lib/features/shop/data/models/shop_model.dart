@@ -1,3 +1,4 @@
+// ignore_for_file: overridden_fields
 import 'package:hive/hive.dart';
 import '../../domain/entities/shop.dart';
 
@@ -48,6 +49,28 @@ class ShopModel extends Shop {
       phoneNumber: shop.phoneNumber,
       upiId: shop.upiId,
       footerText: shop.footerText,
+    );
+  }
+
+  Map<String, dynamic> toFirestore() {
+    return {
+      'name': name,
+      'addressLine1': addressLine1,
+      'addressLine2': addressLine2,
+      'phoneNumber': phoneNumber,
+      'upiId': upiId,
+      'footerText': footerText,
+    };
+  }
+
+  factory ShopModel.fromFirestore(Map<String, dynamic> data) {
+    return ShopModel(
+      name: data['name'] ?? '',
+      addressLine1: data['addressLine1'] ?? '',
+      addressLine2: data['addressLine2'] ?? '',
+      phoneNumber: data['phoneNumber'] ?? '',
+      upiId: data['upiId'] ?? '',
+      footerText: data['footerText'] ?? '',
     );
   }
 
