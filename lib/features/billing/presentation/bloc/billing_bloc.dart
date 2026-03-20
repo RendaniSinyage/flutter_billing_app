@@ -5,22 +5,39 @@ import 'package:billing_app/features/product/domain/entities/product.dart';
 import 'package:billing_app/features/product/domain/usecases/product_usecases.dart';
 import '../../../../core/utils/printer_helper.dart';
 import '../../../../core/data/hive_database.dart';
+import '../../data/models/transaction_model.dart';
+import '../../domain/repositories/billing_repository.dart';
+import '../../../customer/domain/repositories/customer_repository.dart';
 
 part 'billing_event.dart';
 part 'billing_state.dart';
 
 class BillingBloc extends Bloc<BillingEvent, BillingState> {
   final GetProductByBarcodeUseCase getProductByBarcodeUseCase;
+  final UpdateProductUseCase updateProductUseCase;
+  final BillingRepository billingRepository;
+  final CustomerRepository customerRepository;
 
-  BillingBloc({required this.getProductByBarcodeUseCase})
-      : super(const BillingState()) {
+  BillingBloc({
+    required this.getProductByBarcodeUseCase,
+    required this.updateProductUseCase,
+    required this.billingRepository,
+    required this.customerRepository,
+  }) : super(const BillingState()) {
     on<ScanBarcodeEvent>(_onScanBarcode);
     on<AddProductToCartEvent>(_onAddProductToCart);
     on<RemoveProductFromCartEvent>(_onRemoveProductFromCart);
     on<UpdateQuantityEvent>(_onUpdateQuantity);
     on<ClearCartEvent>(_onClearCart);
+    on<SetCustomerEvent>(_onSetCustomer);
     on<PrintReceiptEvent>(_onPrintReceipt);
+    on<FinishTransactionEvent>(_onFinishTransaction);
   }
+
+  bool _isWeightedUnit(QuantityUnit unit) =>
+      unit == QuantityUnit.kg || unit == QuantityUnit.liter;
+
+  double _stepForUnit(QuantityUnit unit) => 1.0;
 
   Future<void> _onScanBarcode(
       ScanBarcodeEvent event, Emitter<BillingState> emit) async {
@@ -44,8 +61,10 @@ class BillingBloc extends Bloc<BillingEvent, BillingState> {
     if (existingIndex >= 0) {
       final existingItem = cleanState.cartItems[existingIndex];
       final backendItems = List<CartItem>.from(cleanState.cartItems);
-      backendItems[existingIndex] =
-          existingItem.copyWith(quantity: existingItem.quantity + 1);
+      final increment = _stepForUnit(existingItem.product.unit);
+      backendItems[existingIndex] = existingItem.copyWith(
+        quantity: existingItem.quantity + increment,
+      );
       emit(cleanState.copyWith(cartItems: backendItems, error: null));
     } else {
       final newItem = CartItem(product: event.product);
@@ -82,6 +101,74 @@ class BillingBloc extends Bloc<BillingEvent, BillingState> {
     emit(const BillingState());
   }
 
+  void _onSetCustomer(SetCustomerEvent event, Emitter<BillingState> emit) {
+    emit(state.copyWith(
+      customerId: event.customerId,
+      customerName: event.customerName,
+    ));
+  }
+
+  Future<void> _onFinishTransaction(
+      FinishTransactionEvent event, Emitter<BillingState> emit) async {
+    emit(state.copyWith(clearError: true));
+    try {
+      final normalizedAmountPaid =
+          event.amountPaid.clamp(0.0, state.totalAmount).toDouble();
+      final transaction = TransactionModel(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        date: DateTime.now(),
+        totalAmount: state.totalAmount,
+        customerId: state.customerId,
+        customerName: state.customerName,
+        amountPaid: normalizedAmountPaid,
+        paymentMethod: event.paymentMethod,
+        items: state.cartItems
+            .map((item) => TransactionItemModel(
+                  productId: item.product.id,
+                  productName: item.product.name,
+                  price: item.product.price,
+                  quantity: item.quantity,
+                  total: item.total,
+                ))
+            .toList(),
+      );
+      await billingRepository.saveTransaction(transaction);
+
+      // Decrease stock for each item sold
+      for (final item in state.cartItems) {
+        final stockDelta = item.product.unit == QuantityUnit.piece ||
+                item.product.unit == QuantityUnit.box
+            ? item.quantity.round()
+            : item.quantity.floor();
+        final newStock = item.product.stock - stockDelta;
+        await updateProductUseCase(
+          item.product.copyWith(stock: newStock >= 0 ? newStock : 0),
+        );
+      }
+
+      // Update customer balance if applicable
+      if (state.customerId.isNotEmpty) {
+        final dueAmount = (state.totalAmount - normalizedAmountPaid)
+            .clamp(0.0, state.totalAmount)
+            .toDouble();
+        if (dueAmount > 0) {
+          final customer =
+              await customerRepository.getCustomerById(state.customerId);
+          if (customer != null) {
+            final updatedCustomer =
+                customer.copyWith(balance: customer.balance + dueAmount);
+            await customerRepository.updateCustomer(updatedCustomer);
+          }
+        }
+      }
+
+      emit(state.copyWith(printSuccess: true));
+    } catch (e) {
+      emit(state.copyWith(error: 'Transaction failed: $e', clearError: false));
+      emit(state.copyWith(clearError: true));
+    }
+  }
+
   Future<void> _onPrintReceipt(
       PrintReceiptEvent event, Emitter<BillingState> emit) async {
     final printerHelper = PrinterHelper();
@@ -109,6 +196,8 @@ class BillingBloc extends Bloc<BillingEvent, BillingState> {
         isPrinting: true, printSuccess: false, clearError: true));
 
     try {
+      final normalizedAmountPaid =
+          event.amountPaid.clamp(0.0, state.totalAmount).toDouble();
       final items = state.cartItems
           .map((item) => {
                 'name': item.product.name,
@@ -126,6 +215,54 @@ class BillingBloc extends Bloc<BillingEvent, BillingState> {
           items: items,
           total: state.totalAmount,
           footer: event.footer);
+
+      final transaction = TransactionModel(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        date: DateTime.now(),
+        totalAmount: state.totalAmount,
+        customerId: state.customerId,
+        customerName: state.customerName,
+        amountPaid: normalizedAmountPaid,
+        paymentMethod: event.paymentMethod,
+        items: state.cartItems
+            .map((item) => TransactionItemModel(
+                  productId: item.product.id,
+                  productName: item.product.name,
+                  price: item.product.price,
+                  quantity: item.quantity,
+                  total: item.total,
+                ))
+            .toList(),
+      );
+      await billingRepository.saveTransaction(transaction);
+
+      // Decrease stock for each item sold
+      for (final item in state.cartItems) {
+        final stockDelta = item.product.unit == QuantityUnit.piece ||
+                item.product.unit == QuantityUnit.box
+            ? item.quantity.round()
+            : item.quantity.floor();
+        final newStock = item.product.stock - stockDelta;
+        await updateProductUseCase(
+          item.product.copyWith(stock: newStock >= 0 ? newStock : 0),
+        );
+      }
+
+      // Update customer balance if applicable
+      if (state.customerId.isNotEmpty) {
+        final dueAmount = (state.totalAmount - normalizedAmountPaid)
+            .clamp(0.0, state.totalAmount)
+            .toDouble();
+        if (dueAmount > 0) {
+          final customer =
+              await customerRepository.getCustomerById(state.customerId);
+          if (customer != null) {
+            final updatedCustomer =
+                customer.copyWith(balance: customer.balance + dueAmount);
+            await customerRepository.updateCustomer(updatedCustomer);
+          }
+        }
+      }
 
       emit(state.copyWith(isPrinting: false, printSuccess: true));
     } catch (e) {
